@@ -1,5 +1,5 @@
 """
-Evaluate Qwen3.5-VL-9B on PGPS/PGPS9K.
+Evaluate Qwen3-VL/Qwen3.5-VL models on PGPS/PGPS9K.
 
 The PGPS repository defines three answer-accuracy protocols:
   - completion: score the first usable generated candidate.
@@ -130,11 +130,11 @@ def result_compute(num_all_list: List[str], exp_tokens: List[str]) -> str:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Evaluate Qwen3.5-VL-9B on PGPS")
+    parser = argparse.ArgumentParser(description="Evaluate Qwen3-VL models on PGPS")
     parser.add_argument(
         "--model_path",
-        default="Qwen/Qwen3.5-VL-9B-Instruct",
-        help="Local path or Hugging Face id for Qwen3.5-VL-9B.",
+        default="Qwen/Qwen3-VL-8B-Instruct",
+        help="Local path or Hugging Face id for a Qwen3-VL/Qwen3.5-VL model.",
     )
     parser.add_argument(
         "--dataset_dir",
@@ -153,7 +153,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--split", default="test", help="Split json name without .json.")
     parser.add_argument("--diagram_dir", default=None, help="Override diagram image directory.")
-    parser.add_argument("--output_dir", default="./eval_results_qwen35", help="Output directory.")
+    parser.add_argument("--output_dir", default="./eval_results_qwen3vl", help="Output directory.")
     parser.add_argument("--max_samples", type=int, default=-1, help="-1 evaluates the full split.")
     parser.add_argument("--sample_offset", type=int, default=0, help="Skip this many samples first.")
     parser.add_argument(
@@ -333,15 +333,8 @@ def load_model_and_processor(args: argparse.Namespace):
     if args.visible_cuda_devices is not None:
         os.environ["CUDA_VISIBLE_DEVICES"] = args.visible_cuda_devices
 
+    import transformers
     from transformers import AutoProcessor
-
-    try:
-        from transformers import Qwen3_5ForConditionalGeneration as ModelClass
-    except Exception:
-        try:
-            from transformers import AutoModelForImageTextToText as ModelClass
-        except Exception:
-            from transformers import AutoModelForVision2Seq as ModelClass
 
     dtype_map = {
         "auto": "auto",
@@ -352,12 +345,43 @@ def load_model_and_processor(args: argparse.Namespace):
     torch_dtype = dtype_map[args.torch_dtype]
 
     print(f"Loading model: {args.model_path}")
-    model = ModelClass.from_pretrained(
-        args.model_path,
-        torch_dtype=torch_dtype,
-        device_map=args.device_map,
-        trust_remote_code=True,
-    )
+    model_path_lower = str(args.model_path).lower()
+    preferred_model_classes = [
+        "Qwen3VLForConditionalGeneration",
+        "Qwen3_5ForConditionalGeneration",
+        "AutoModelForImageTextToText",
+        "AutoModelForVision2Seq",
+    ]
+    if "3.5" in model_path_lower or "3_5" in model_path_lower:
+        preferred_model_classes = [
+            "Qwen3_5ForConditionalGeneration",
+            "Qwen3VLForConditionalGeneration",
+            "AutoModelForImageTextToText",
+            "AutoModelForVision2Seq",
+        ]
+
+    load_errors: List[str] = []
+    for class_name in preferred_model_classes:
+        ModelClass = getattr(transformers, class_name, None)
+        if ModelClass is None:
+            load_errors.append(f"{class_name}: not available in installed transformers")
+            continue
+        try:
+            model = ModelClass.from_pretrained(
+                args.model_path,
+                torch_dtype=torch_dtype,
+                device_map=args.device_map,
+                trust_remote_code=True,
+            )
+            break
+        except Exception as exc:
+            load_errors.append(f"{class_name}: {exc}")
+    else:
+        raise RuntimeError(
+            "Could not load the requested Qwen VL model. Tried:\n"
+            + "\n".join(f"  - {error}" for error in load_errors)
+        )
+
     model.eval()
     processor = AutoProcessor.from_pretrained(args.model_path, trust_remote_code=True)
     return model, processor
@@ -771,7 +795,7 @@ def print_summary(result_path: Path) -> None:
     summary = data["summary"]
 
     print("\n" + "=" * 72)
-    print("Qwen3.5-VL PGPS Evaluation")
+    print("Qwen-VL PGPS Evaluation")
     print("=" * 72)
     print(f"Model: {summary['model_path']}")
     print(f"Samples: {summary['total_samples']}")
